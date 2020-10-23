@@ -5,11 +5,19 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 	log "github.com/sirupsen/logrus"
 )
+
+func GetECSServiceRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_ecs_service",
+		Notes: []string{"Only supports Fargate on-demand."},
+		RFunc: NewECSService,
+	}
+}
 
 func NewECSService(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	launchType := d.Get("launch_type").String()
@@ -23,9 +31,18 @@ func NewECSService(d *schema.ResourceData, u *schema.ResourceData) *schema.Resou
 	if d.Get("desired_count").Exists() {
 		desiredCount = d.Get("desired_count").Int()
 	}
-	taskDefinition := d.References("task_definition")[0]
-	memory := convertResourceString(taskDefinition.Get("memory").String())
-	cpu := convertResourceString(taskDefinition.Get("cpu").String())
+
+	var taskDefinition *schema.ResourceData
+	refs := d.References("task_definition")
+	if len(refs) > 0 {
+		taskDefinition = refs[0]
+	}
+	memory := decimal.Zero
+	cpu := decimal.Zero
+	if taskDefinition != nil {
+		memory = convertResourceString(taskDefinition.Get("memory").String())
+		cpu = convertResourceString(taskDefinition.Get("cpu").String())
+	}
 
 	costComponents := []*schema.CostComponent{
 		{
@@ -58,7 +75,7 @@ func NewECSService(d *schema.ResourceData, u *schema.ResourceData) *schema.Resou
 		},
 	}
 
-	if taskDefinition.Get("inference_accelerator.0").Exists() {
+	if taskDefinition != nil && taskDefinition.Get("inference_accelerator.0").Exists() {
 		deviceType := taskDefinition.Get("inference_accelerator.0.device_type").String()
 		costComponents = append(costComponents, &schema.CostComponent{
 			Name:           fmt.Sprintf("Inference accelerator (%s)", deviceType),

@@ -26,17 +26,6 @@ jobs:
       run: |
         go get -v -t -d ./...
 
-    - name: Check out terraform-provider-infracost@master
-      uses: actions/checkout@v2
-      with:
-        repository: infracost/terraform-provider-infracost
-        ref: refs/heads/master
-        path: terraform-provider-infracost
-
-    - name: Install terraform-provider-infracost
-      run: sudo make install
-      working-directory: terraform-provider-infracost
-
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v1.2.1
       with:
@@ -45,3 +34,14 @@ jobs:
 
     - name: Test
       run: make test
+      env:
+        INFRACOST_API_KEY: "00000000000000000000000000000000"
+        INFRACOST_LOG_LEVEL: info
+
+    - name: Test example works ok
+      run: |
+        make run --silent ARGS="--tfdir examples/terraform --output json" > out.json
+        jq '' out.json
+      env:
+        INFRACOST_API_KEY: "00000000000000000000000000000000"
+        INFRACOST_LOG_LEVEL: info

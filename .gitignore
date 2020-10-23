@@ -1,4 +1,9 @@
-.DS_Store
+# IDE
+.vscode/
+.idea/
+
+# OS
+**/.DS_Store
 
 # Build artifacts
 /build
@@ -9,14 +14,21 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Local env settings
+# Local
 .env.local
+vendor/
 
 # Terraform artifacts
 **/.terraform/**
 examples/*/plan.save
 examples/*/plan.json
 
+# Test artifacts
+.test_cache
+
 #script generated files
 scripts/price_explorer/tmp-*
 scripts/price_explorer/index.json
+
+# Generated docs
+docs/generated/

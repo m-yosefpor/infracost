@@ -1,5 +1,6 @@
 #!/bin/sh
-gq https://pricing.infracost.io/graphql -q "
+echo "List of Product Families for $1:"
+gq https://pricing.api.infracost.io/graphql -H "x-api-key: $INFRACOST_API_KEY" -q "
 query {
     products (
     filter: {
@@ -10,4 +11,4 @@ query {
   ){
         productFamily
     }
-}" | jq '.data.products | map ({ (.productFamily): .__typename} ) | add'
+}" | jq '.data.products | map ({ (.productFamily): .__typename} ) | add' | jq "keys"

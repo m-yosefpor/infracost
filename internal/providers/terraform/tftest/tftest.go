@@ -8,9 +8,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/infracost/infracost/pkg/prices"
-	"github.com/infracost/infracost/pkg/schema"
-	"github.com/infracost/infracost/pkg/testutil"
+	"github.com/infracost/infracost/internal/config"
+	"github.com/infracost/infracost/internal/prices"
+	"github.com/infracost/infracost/internal/schema"
+	"github.com/infracost/infracost/internal/testutil"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/infracost/infracost/internal/providers/terraform"
 
@@ -24,7 +28,7 @@ var tfProviders = `
 				source  = "hashicorp/aws"
 			}
 			infracost = {
-				source = "infracost.io/infracost/infracost"
+				source = "infracost/infracost"
 			}
 		}
 	}
@@ -42,6 +46,8 @@ var tfProviders = `
 	provider "infracost" {}
 `
 
+var pluginCache = filepath.Join(config.RootDir(), ".test_cache/terraform_plugins")
+
 type Project struct {
 	Files []File
 }
@@ -55,7 +61,44 @@ func WithProviders(tf string) string {
 	return fmt.Sprintf("%s%s", tfProviders, tf)
 }
 
-func ResourceTests(t *testing.T, tf string, resourceChecks []testutil.ResourceCheck) {
+func InstallPlugins() error {
+	project := Project{
+		Files: []File{
+			{
+				Path:     "init.tf",
+				Contents: WithProviders(""),
+			},
+		},
+	}
+
+	tfdir, err := CreateProject(project)
+	if err != nil {
+		return errors.Wrap(err, "Error creating Terraform project")
+	}
+
+	err = os.MkdirAll(pluginCache, os.ModePerm)
+	if err != nil {
+		log.Errorf("Error creating plugin cache directory: %s", err.Error())
+	} else {
+		os.Setenv("TF_PLUGIN_CACHE_DIR", pluginCache)
+	}
+
+	opts := &terraform.CmdOptions{
+		TerraformDir: tfdir,
+	}
+
+	fmt.Println(tfdir)
+	fmt.Println(pluginCache)
+
+	_, err = terraform.Cmd(opts, "init", "-no-color")
+	if err != nil {
+		return errors.Wrap(err, "Error initializing Terraform working directory")
+	}
+
+	return nil
+}
+
+func ResourceTests(t *testing.T, tf string, checks []testutil.ResourceCheck) {
 	project := Project{
 		Files: []File{
 			{
@@ -65,18 +108,14 @@ func ResourceTests(t *testing.T, tf string, resourceChecks []testutil.ResourceCh
 		},
 	}
 
-	ResourceTestsForProject(t, project, resourceChecks)
+	ResourceTestsForProject(t, project, checks)
 }
 
-func ResourceTestsForProject(t *testing.T, project Project, resourceChecks []testutil.ResourceCheck) {
+func ResourceTestsForProject(t *testing.T, project Project, checks []testutil.ResourceCheck) {
 	resources, err := RunCostCalculations(project)
-	if err != nil {
-		t.Error(err)
-	}
+	assert.NoError(t, err)
 
-	for _, resourceCheck := range resourceChecks {
-		testutil.TestResource(t, resources, resourceCheck)
-	}
+	testutil.TestResources(t, resources, checks)
 }
 
 func RunCostCalculations(project Project) ([]*schema.Resource, error) {
@@ -92,8 +131,12 @@ func RunCostCalculations(project Project) ([]*schema.Resource, error) {
 	return resources, nil
 }
 
+func CreateProject(project Project) (string, error) {
+	return writeToTmpDir(project)
+}
+
 func loadResources(project Project) ([]*schema.Resource, error) {
-	tfdir, err := writeToTmpDir(project)
+	tfdir, err := CreateProject(project)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +145,7 @@ func loadResources(project Project) ([]*schema.Resource, error) {
 	flags.String("tfdir", tfdir, "")
 	c := cli.NewContext(nil, flags, nil)
 
-	provider := terraform.Provider()
+	provider := terraform.New()
 	err = provider.ProcessArgs(c)
 	if err != nil {
 		return nil, err
@@ -129,7 +172,7 @@ func writeToTmpDir(project Project) (string, error) {
 			}
 		}
 
-		err = ioutil.WriteFile(fullPath, []byte(terraformFile.Contents), 0644)
+		err = ioutil.WriteFile(fullPath, []byte(terraformFile.Contents), 0600)
 		if err != nil {
 			return tmpDir, err
 		}

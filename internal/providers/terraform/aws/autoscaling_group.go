@@ -3,11 +3,22 @@ package aws
 import (
 	"fmt"
 
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 )
+
+func GetAutoscalingGroupRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name: "aws_autoscaling_group",
+		Notes: []string{
+			"See aws_instance",
+		},
+		RFunc: NewAutoscalingGroup,
+	}
+}
 
 func NewAutoscalingGroup(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	region := d.Get("region").String()
@@ -20,14 +31,37 @@ func NewAutoscalingGroup(d *schema.ResourceData, u *schema.ResourceData) *schema
 	mixedInstanceLaunchTemplateRef := d.References("mixed_instances_policy.0.launch_template.0.launch_template_specification.0.launch_template_id")
 
 	if len(launchConfigurationRef) > 0 {
-		launchConfiguration := newLaunchConfiguration(launchConfigurationRef[0].Address, launchConfigurationRef[0], region)
-		multiplyQuantities(launchConfiguration, desiredCapacity)
-		subResources = append(subResources, launchConfiguration)
+		lc := newLaunchConfiguration(launchConfigurationRef[0].Address, launchConfigurationRef[0], region)
+
+		// AutoscalingGroup should show as not supported LaunchConfiguration is not supported
+		if lc == nil {
+			return nil
+		}
+		multiplyQuantities(lc, desiredCapacity)
+		subResources = append(subResources, lc)
 	} else if len(launchTemplateRef) > 0 {
-		subResources = append(subResources, newLaunchTemplate(launchTemplateRef[0].Address, launchTemplateRef[0], region, desiredCapacity, decimal.Zero))
+		onDemandCount := desiredCapacity
+		spotCount := decimal.Zero
+		if launchTemplateRef[0].Get("instance_market_options.0.market_type").String() == "spot" {
+			onDemandCount = decimal.Zero
+			spotCount = desiredCapacity
+		}
+		lt := newLaunchTemplate(launchTemplateRef[0].Address, launchTemplateRef[0], region, onDemandCount, spotCount)
+
+		// AutoscalingGroup should show as not supported LaunchTemplate is not supported
+		if lt == nil {
+			return nil
+		}
+		subResources = append(subResources, lt)
 	} else if len(mixedInstanceLaunchTemplateRef) > 0 {
 		mixedInstancesPolicy := d.Get("mixed_instances_policy.0")
-		subResources = append(subResources, newMixedInstancesAwsLaunchTemplate(mixedInstanceLaunchTemplateRef[0].Address, mixedInstanceLaunchTemplateRef[0], region, desiredCapacity, mixedInstancesPolicy))
+		lt := newMixedInstancesAwsLaunchTemplate(mixedInstanceLaunchTemplateRef[0].Address, mixedInstanceLaunchTemplateRef[0], region, desiredCapacity, mixedInstancesPolicy)
+
+		// AutoscalingGroup should show as not supported LaunchTemplate is not supported
+		if lt == nil {
+			return nil
+		}
+		subResources = append(subResources, lt)
 	}
 
 	return &schema.Resource{
@@ -37,36 +71,95 @@ func NewAutoscalingGroup(d *schema.ResourceData, u *schema.ResourceData) *schema
 }
 
 func newLaunchConfiguration(name string, d *schema.ResourceData, region string) *schema.Resource {
-	compute := computeCostComponent(d, region, "on_demand")
+	tenancy := "Shared"
+	if d.Get("placement_tenancy").String() == "host" {
+		log.Warnf("Skipping resource %s. Infracost currently does not support host tenancy for AWS Launch Configurations", d.Address)
+		return nil
+	} else if d.Get("placement_tenancy").String() == "dedicated" {
+		tenancy = "Dedicated"
+	}
 
 	subResources := make([]*schema.Resource, 0)
 	subResources = append(subResources, newRootBlockDevice(d.Get("root_block_device.0"), region))
 	subResources = append(subResources, newEbsBlockDevices(d.Get("ebs_block_device"), region)...)
 
+	purchaseOption := "on_demand"
+	if d.Get("spot_price").String() != "" {
+		purchaseOption = "spot"
+	}
+	costComponents := []*schema.CostComponent{computeCostComponent(d, purchaseOption, tenancy)}
+
+	if d.Get("ebs_optimized").Bool() {
+		costComponents = append(costComponents, ebsOptimizedCostComponent(d))
+	}
+
+	// Detailed monitoring is enabled by default for launch configurations
+	if d.Get("enable_monitoring").Bool() {
+		costComponents = append(costComponents, detailedMonitoringCostComponent(d))
+	}
+
+	c := cpuCreditsCostComponent(d)
+	if c != nil {
+		costComponents = append(costComponents, c)
+	}
+
 	return &schema.Resource{
 		Name:           name,
 		SubResources:   subResources,
-		CostComponents: []*schema.CostComponent{compute},
+		CostComponents: costComponents,
 	}
 }
 
 func newLaunchTemplate(name string, d *schema.ResourceData, region string, onDemandCount decimal.Decimal, spotCount decimal.Decimal) *schema.Resource {
+	tenancy := "Shared"
+	if d.Get("placement.0.tenancy").String() == "host" {
+		log.Warnf("Skipping resource %s. Infracost currently does not support host tenancy for AWS Launch Templates", d.Address)
+		return nil
+	} else if d.Get("placement.0.tenancy").String() == "dedicated" {
+		tenancy = "Dedicated"
+	}
+
+	totalCount := onDemandCount.Add(spotCount)
+
 	costComponents := make([]*schema.CostComponent, 0)
+
+	if d.Get("ebs_optimized").Bool() {
+		c := ebsOptimizedCostComponent(d)
+		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(totalCount))
+		costComponents = append(costComponents, c)
+	}
+
+	if d.Get("elastic_inference_accelerator.0.type").Exists() {
+		c := elasticInferenceAcceleratorCostComponent(d)
+		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(totalCount))
+		costComponents = append(costComponents, c)
+	}
+
+	if d.Get("monitoring.0.enabled").Bool() {
+		c := detailedMonitoringCostComponent(d)
+		c.MonthlyQuantity = decimalPtr(c.MonthlyQuantity.Mul(totalCount))
+		costComponents = append(costComponents, c)
+	}
+
+	c := cpuCreditsCostComponent(d)
+	if c != nil {
+		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(totalCount))
+		costComponents = append(costComponents, c)
+	}
+
 	if onDemandCount.GreaterThan(decimal.Zero) {
-		onDemandCompute := computeCostComponent(d, region, "on_demand")
-		onDemandCompute.HourlyQuantity = decimalPtr(onDemandCompute.HourlyQuantity.Mul(onDemandCount))
-		costComponents = append(costComponents, onDemandCompute)
+		c := computeCostComponent(d, "on_demand", tenancy)
+		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(onDemandCount))
+		costComponents = append(costComponents, c)
 	}
 
 	if spotCount.GreaterThan(decimal.Zero) {
-		spotCompute := computeCostComponent(d, region, "spot")
-		spotCompute.HourlyQuantity = decimalPtr(spotCompute.HourlyQuantity.Mul(spotCount))
-		costComponents = append(costComponents, spotCompute)
+		c := computeCostComponent(d, "spot", tenancy)
+		c.HourlyQuantity = decimalPtr(c.HourlyQuantity.Mul(spotCount))
+		costComponents = append(costComponents, c)
 	}
 
 	subResources := make([]*schema.Resource, 0)
-
-	totalCount := onDemandCount.Add(spotCount)
 	rootBlockDevice := newRootBlockDevice(d.Get("root_block_device.0"), region)
 	multiplyQuantities(rootBlockDevice, totalCount)
 	subResources = append(subResources, rootBlockDevice)
@@ -96,6 +189,26 @@ func newMixedInstancesAwsLaunchTemplate(name string, d *schema.ResourceData, reg
 	return newLaunchTemplate(name, d, region, onDemandCount, spotCount)
 }
 
+func elasticInferenceAcceleratorCostComponent(d *schema.ResourceData) *schema.CostComponent {
+	region := d.Get("region").String()
+	deviceType := d.Get("elastic_inference_accelerator.0.type").String()
+
+	return &schema.CostComponent{
+		Name:           fmt.Sprintf("Inference accelerator (%s)", deviceType),
+		Unit:           "hours",
+		HourlyQuantity: decimalPtr(decimal.NewFromInt(1)),
+		ProductFilter: &schema.ProductFilter{
+			VendorName:    strPtr("aws"),
+			Region:        strPtr(region),
+			Service:       strPtr("AmazonEI"),
+			ProductFamily: strPtr("Elastic Inference"),
+			AttributeFilters: []*schema.AttributeFilter{
+				{Key: "usagetype", ValueRegex: strPtr(fmt.Sprintf("/%s/", deviceType))},
+			},
+		},
+	}
+}
+
 func getInstanceTypeAndCount(mixedInstancePolicyData gjson.Result, capacity decimal.Decimal) (string, decimal.Decimal) {
 	count := capacity
 	instanceType := ""
@@ -107,7 +220,12 @@ func getInstanceTypeAndCount(mixedInstancePolicyData gjson.Result, capacity deci
 		if override.Get("weighted_capacity").Exists() && override.Get("weighted_capacity").Type != gjson.Null {
 			weightedCapacity = decimal.NewFromInt(override.Get("weighted_capacity").Int())
 		}
-		count = capacity.Div(weightedCapacity).Ceil()
+
+		if weightedCapacity.Equals(decimal.Zero) {
+			count = decimal.Zero
+		} else {
+			count = capacity.Div(weightedCapacity).Ceil()
+		}
 	}
 
 	return instanceType, count
@@ -136,10 +254,10 @@ func calculateOnDemandAndSpotCounts(mixedInstancePolicyData gjson.Result, totalC
 func multiplyQuantities(resource *schema.Resource, multiplier decimal.Decimal) {
 	for _, costComponent := range resource.CostComponents {
 		if costComponent.HourlyQuantity != nil {
-			costComponent.HourlyQuantity = decimalPtr((*costComponent.HourlyQuantity).Mul(multiplier))
+			costComponent.HourlyQuantity = decimalPtr(costComponent.HourlyQuantity.Mul(multiplier))
 		}
 		if costComponent.MonthlyQuantity != nil {
-			costComponent.MonthlyQuantity = decimalPtr((*costComponent.MonthlyQuantity).Mul(multiplier))
+			costComponent.MonthlyQuantity = decimalPtr(costComponent.MonthlyQuantity.Mul(multiplier))
 		}
 	}
 

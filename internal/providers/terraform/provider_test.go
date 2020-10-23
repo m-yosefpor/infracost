@@ -1,12 +1,30 @@
 package terraform_test
 
 import (
+	"flag"
+	"fmt"
+	"os"
 	"testing"
 
-	"github.com/infracost/infracost/pkg/testutil"
+	"github.com/infracost/infracost/internal/testutil"
 
 	"github.com/infracost/infracost/internal/providers/terraform/tftest"
 )
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if !testing.Short() {
+		// Ensure plugins are installed and cached
+		err := tftest.InstallPlugins()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	code := m.Run()
+	os.Exit(code)
+}
 
 func TestLoadResources_rootModule(t *testing.T) {
 	if testing.Short() {
@@ -29,7 +47,8 @@ func TestLoadResources_rootModule(t *testing.T) {
 
 	resourceChecks := []testutil.ResourceCheck{
 		{
-			Name: "aws_nat_gateway.nat1",
+			Name:      "aws_nat_gateway.nat1",
+			SkipCheck: true,
 		},
 	}
 
@@ -78,10 +97,12 @@ func TestLoadResources_nestedModule(t *testing.T) {
 
 	resourceChecks := []testutil.ResourceCheck{
 		{
-			Name: "module.module1.aws_nat_gateway.nat1",
+			Name:      "module.module1.aws_nat_gateway.nat1",
+			SkipCheck: true,
 		},
 		{
-			Name: "module.module1.module.module2.aws_nat_gateway.nat2",
+			Name:      "module.module1.module.module2.aws_nat_gateway.nat2",
+			SkipCheck: true,
 		},
 	}
 

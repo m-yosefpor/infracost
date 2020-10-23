@@ -1,17 +1,24 @@
 package aws
 
 import (
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 )
 
+func GetEBSVolumeRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_ebs_volume",
+		RFunc: NewEBSVolume,
+	}
+}
+
 func NewEBSVolume(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	region := d.Get("region").String()
 
-	volumeApiName := "gp2"
+	volumeAPIName := "gp2"
 	if d.Get("type").Exists() {
-		volumeApiName = d.Get("type").String()
+		volumeAPIName = d.Get("type").String()
 	}
 
 	gbVal := decimal.NewFromInt(int64(defaultVolumeSize))
@@ -26,14 +33,30 @@ func NewEBSVolume(d *schema.ResourceData, u *schema.ResourceData) *schema.Resour
 
 	return &schema.Resource{
 		Name:           d.Address,
-		CostComponents: ebsVolumeCostComponents(region, volumeApiName, gbVal, iopsVal),
+		CostComponents: ebsVolumeCostComponents(region, volumeAPIName, gbVal, iopsVal),
 	}
 }
 
-func ebsVolumeCostComponents(region string, volumeApiName string, gbVal decimal.Decimal, iopsVal decimal.Decimal) []*schema.CostComponent {
+func ebsVolumeCostComponents(region string, volumeAPIName string, gbVal decimal.Decimal, iopsVal decimal.Decimal) []*schema.CostComponent {
+	var name string
+	switch volumeAPIName {
+	case "standard":
+		name = "Magnetic storage"
+	case "io1":
+		name = "Provisioned IOPS SSD storage (io1)"
+	case "io2":
+		name = "Provisioned IOPS SSD storage (io2)"
+	case "st1":
+		name = "Throughput Optimized HDD storage (st1)"
+	case "sc1":
+		name = "Cold HDD storage (sc1)"
+	default:
+		name = "General Purpose SSD storage (gp2)"
+	}
+
 	costComponents := []*schema.CostComponent{
 		{
-			Name:            "Storage",
+			Name:            name,
 			Unit:            "GB-months",
 			MonthlyQuantity: &gbVal,
 			ProductFilter: &schema.ProductFilter{
@@ -42,15 +65,15 @@ func ebsVolumeCostComponents(region string, volumeApiName string, gbVal decimal.
 				Service:       strPtr("AmazonEC2"),
 				ProductFamily: strPtr("Storage"),
 				AttributeFilters: []*schema.AttributeFilter{
-					{Key: "volumeApiName", Value: strPtr(volumeApiName)},
+					{Key: "volumeApiName", Value: strPtr(volumeAPIName)},
 				},
 			},
 		},
 	}
 
-	if volumeApiName == "io1" {
+	if volumeAPIName == "io1" || volumeAPIName == "io2" {
 		costComponents = append(costComponents, &schema.CostComponent{
-			Name:            "Storage IOPS",
+			Name:            "Provisioned IOPS",
 			Unit:            "IOPS-months",
 			MonthlyQuantity: &iopsVal,
 			ProductFilter: &schema.ProductFilter{
@@ -59,8 +82,26 @@ func ebsVolumeCostComponents(region string, volumeApiName string, gbVal decimal.
 				Service:       strPtr("AmazonEC2"),
 				ProductFamily: strPtr("System Operation"),
 				AttributeFilters: []*schema.AttributeFilter{
-					{Key: "volumeApiName", Value: strPtr(volumeApiName)},
-					{Key: "usagetype", ValueRegex: strPtr("/EBS:VolumeP-IOPS.piops/")},
+					{Key: "volumeApiName", Value: strPtr(volumeAPIName)},
+					{Key: "usagetype", ValueRegex: strPtr("/EBS:VolumeP-IOPS/")},
+				},
+			},
+		})
+	}
+
+	if volumeAPIName == "standard" {
+		costComponents = append(costComponents, &schema.CostComponent{
+			Name:            "I/O requests",
+			Unit:            "Per request",
+			MonthlyQuantity: decimalPtr(decimal.Zero),
+			ProductFilter: &schema.ProductFilter{
+				VendorName:    strPtr("aws"),
+				Region:        strPtr(region),
+				Service:       strPtr("AmazonEC2"),
+				ProductFamily: strPtr("System Operation"),
+				AttributeFilters: []*schema.AttributeFilter{
+					{Key: "volumeApiName", Value: strPtr(volumeAPIName)},
+					{Key: "usagetype", ValueRegex: strPtr("/EBS:VolumeIOUsage/")},
 				},
 			},
 		})

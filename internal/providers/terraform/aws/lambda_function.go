@@ -1,10 +1,18 @@
 package aws
 
 import (
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 )
+
+func GetLambdaFunctionRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_lambda_function",
+		Notes: []string{"Provisioned concurrency is not yet supported."},
+		RFunc: NewLambdaFunction,
+	}
+}
 
 func NewLambdaFunction(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	region := d.Get("region").String()

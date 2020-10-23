@@ -3,11 +3,18 @@ package aws
 import (
 	"strings"
 
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 )
+
+func GetDBInstanceRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_db_instance",
+		RFunc: NewDBInstance,
+	}
+}
 
 func NewDBInstance(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	region := d.Get("region").String()

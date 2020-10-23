@@ -2,12 +2,13 @@
 terraform {
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws"
     }
-    # TODO Enable once we have released terraform-provider-infracost
-    # infracost = {
-    #   source = "infracost.io/infracost/infracost"
-    # }
+    # Install terraform-provider-infracost
+    infracost = {
+      source = "infracost/infracost"
+      version = ">= 0.0.5"
+    }
   }
 }
 
@@ -21,8 +22,8 @@ provider "aws" {
   secret_key                  = "mock_secret_key"
 }
 
-# TODO Enable once we have released terraform-provider-infracost
-# provider "infracost" {}
+# Enable terraform-provider-infracost
+provider "infracost" {}
 
 data "aws_region" "current" {}
 

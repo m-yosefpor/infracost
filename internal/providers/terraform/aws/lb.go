@@ -1,10 +1,23 @@
 package aws
 
 import (
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 )
+
+func GetLBRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_lb",
+		RFunc: NewLB,
+	}
+}
+func GetALBRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_alb",
+		RFunc: NewLB,
+	}
+}
 
 func NewLB(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	costComponentName := "Per Application Load Balancer"
@@ -14,10 +27,10 @@ func NewLB(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 		productFamily = "Load Balancer-Network"
 	}
 
-	return newLBResource(d, u, productFamily, costComponentName)
+	return newLBResource(d, productFamily, costComponentName)
 }
 
-func newLBResource(d *schema.ResourceData, u *schema.ResourceData, productFamily string, costComponentName string) *schema.Resource {
+func newLBResource(d *schema.ResourceData, productFamily string, costComponentName string) *schema.Resource {
 	region := d.Get("region").String()
 
 	return &schema.Resource{

@@ -3,150 +3,200 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
+	"runtime/debug"
+	"strings"
 
-	"github.com/infracost/infracost/pkg/config"
-	"github.com/infracost/infracost/pkg/output"
-	"github.com/infracost/infracost/pkg/prices"
-	"github.com/infracost/infracost/pkg/schema"
-
+	"github.com/infracost/infracost/internal/config"
 	"github.com/infracost/infracost/internal/providers/terraform"
-
-	"github.com/briandowns/spinner"
-	"github.com/fatih/color"
+	"github.com/infracost/infracost/internal/spin"
+	"github.com/infracost/infracost/internal/update"
+	"github.com/infracost/infracost/internal/version"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/fatih/color"
 	"github.com/urfave/cli/v2"
 )
 
-func main() {
-	formatter := &log.TextFormatter{
-		DisableTimestamp:       true,
-		DisableLevelTruncation: true,
+var spinner *spin.Spinner
+
+func usageError(c *cli.Context, msg string) {
+	fmt.Fprintln(os.Stderr, color.HiRedString(msg)+"\n")
+	c.App.Writer = os.Stderr
+	cli.ShowAppHelpAndExit(c, 1)
+}
+
+func handleGlobalFlags(c *cli.Context) error {
+	if c.IsSet("no-color") {
+		config.Config.NoColor = c.Bool("no-color")
 	}
-	log.SetFormatter(formatter)
+	color.NoColor = config.Config.NoColor
+
+	if c.IsSet("log-level") {
+		err := config.Config.SetLogLevel(c.String("log-level"))
+		if err != nil {
+			usageError(c, err.Error())
+		}
+	}
+
+	if c.String("pricing-api-endpoint") != "" {
+		config.Config.PricingAPIEndpoint = c.String("pricing-api-endpoint")
+	}
+
+	return nil
+}
+
+func startUpdateCheck(c chan *update.Info) {
+	go func() {
+		updateInfo, err := update.CheckForUpdate()
+		if err != nil {
+			log.Debugf("error checking for update: %v", err)
+		}
+		c <- updateInfo
+		close(c)
+	}()
+}
+
+func versionOutput(app *cli.App) string {
+	s := fmt.Sprintf("Infracost %s", app.Version)
+	v, err := terraform.Version()
+
+	if err != nil {
+		log.Warnf("error determining Terraform version")
+	} else {
+		s += fmt.Sprintf("\n%s", v)
+	}
+
+	return s
+}
+
+func checkAPIKey() error {
+	infracostAPIKey := config.Config.APIKey
+	if config.Config.PricingAPIEndpoint == config.Config.DefaultPricingAPIEndpoint && infracostAPIKey == "" {
+		red := color.New(color.FgHiRed)
+		bold := color.New(color.Bold, color.FgHiWhite)
+
+		return errors.New(fmt.Sprintf("%s\n%s %s",
+			red.Sprint("No INFRACOST_API_KEY environment variable is set."),
+			red.Sprintf("We run a free hosted API for cloud prices, to get an API key run"),
+			bold.Sprint("`infracost register`"),
+		))
+	}
+
+	return nil
+}
+
+func main() {
+	defaultCmd := defaultCmd()
+
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:  "version",
+		Usage: "Prints the version of infracost and terraform",
+	}
+
+	cli.VersionPrinter = func(c *cli.Context) {
+		fmt.Println(versionOutput(c.App))
+	}
+
+	updateMessageChan := make(chan *update.Info)
+	startUpdateCheck(updateMessageChan)
 
 	app := &cli.App{
-		Name:                 "infracost",
-		Usage:                "Generate cost reports from Terraform plans",
+		Name:  "infracost",
+		Usage: "Generate cost reports from Terraform plans",
+		UsageText: `infracost [global options] command [command options] [arguments...]
+
+Example:
+	# Run infracost with a Terraform directory and var file
+	infracost --tfdir /path/to/code --tfflags "-var-file=myvars.tfvars"
+
+	# Run infracost with a JSON Terraform plan file
+	infracost --tfjson /path/to/plan.json
+
+	# Run infracost with a Terraform directory and a plan file in it
+	infracost --tfdir /path/to/code --tfplan plan.save`,
 		EnableBashCompletion: true,
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:      "tfjson",
-				Usage:     "Path to Terraform Plan JSON file",
-				TakesFile: true,
-			},
-			&cli.StringFlag{
-				Name:      "tfplan",
-				Usage:     "Path to Terraform Plan file. Requires tfdir to also be set",
-				TakesFile: true,
-			},
-			&cli.StringFlag{
-				Name:      "tfdir",
-				Usage:     "Path to the Terraform project directory",
-				TakesFile: true,
-			},
+		Version:              version.Version,
+		Flags: append([]cli.Flag{
 			&cli.StringFlag{
 				Name:  "log-level",
-				Usage: "Log level (TRACE, DEBUG, INFO, WARN, ERROR)",
-				Value: "WARN",
-			},
-			&cli.StringFlag{
-				Name:    "output",
-				Aliases: []string{"o"},
-				Usage:   "Output (json, table)",
-				Value:   "table",
+				Usage: "Log level (trace, debug, info, warn, error, fatal)",
 			},
 			&cli.BoolFlag{
 				Name:  "no-color",
 				Usage: "Turn off colored output",
-				Value: false,
 			},
 			&cli.StringFlag{
-				Name:  "api-url",
-				Usage: "Price List API URL",
+				Name:  "pricing-api-endpoint",
+				Usage: "Specify an alternate price list API URL",
 			},
-		},
+		}, defaultCmd.Flags...),
 		OnUsageError: func(c *cli.Context, err error, isSubcommand bool) error {
-			log.Error(err)
-			_ = cli.ShowAppHelp(c)
+			usageError(c, err.Error())
+			return nil
+		},
+		Before:   handleGlobalFlags,
+		Commands: []*cli.Command{registerCmd()},
+		Action:   defaultCmd.Action,
+	}
+
+	var appErr error
+
+	defer func() {
+		if appErr != nil {
+			if spinner != nil {
+				spinner.Fail()
+			}
+
+			if appErr.Error() != "" {
+				fmt.Fprintf(os.Stderr, "%s\n", color.HiRedString(appErr.Error()))
+			}
+		}
+
+		unexpectedErr := recover()
+		if unexpectedErr != nil {
+			if spinner != nil {
+				spinner.Fail()
+			}
+
+			red := color.New(color.FgHiRed)
+			bold := color.New(color.Bold, color.FgHiWhite)
+
+			msg := fmt.Sprintf("\n%s\n%s\n%s\nEnvironment:\n%s\n\n%s %s\n",
+				red.Sprint("An unexpected error occurred"),
+				unexpectedErr,
+				string(debug.Stack()),
+				versionOutput(app),
+				red.Sprint("Please copy the above output and create a new issue at"),
+				bold.Sprint("https://github.com/infracost/infracost/issues/new"),
+			)
+			fmt.Fprint(os.Stderr, msg)
+		}
+
+		updateInfo := <-updateMessageChan
+		if updateInfo != nil {
+			msg := fmt.Sprintf("\n%s %s → %s\n%s\n",
+				color.YellowString("A new version of Infracost is available:"),
+				color.CyanString(version.Version),
+				color.CyanString(updateInfo.LatestVersion),
+				indent(color.YellowString(updateInfo.Cmd), "  "),
+			)
+			fmt.Fprint(os.Stderr, msg)
+		}
+
+		if appErr != nil || unexpectedErr != nil {
 			os.Exit(1)
-			return nil
-		},
-		Action: func(c *cli.Context) error {
-			if c.Bool("no-color") {
-				config.Config.NoColor = true
-				formatter.DisableColors = true
-				color.NoColor = true
-			}
+		}
+	}()
 
-			if c.String("log-level") != "" {
-				switch c.String("log-level") {
-				case "TRACE":
-					log.SetLevel(log.TraceLevel)
-				case "DEBUG":
-					log.SetLevel(log.DebugLevel)
-				case "INFO":
-					log.SetLevel(log.InfoLevel)
-				case "WARN":
-					log.SetLevel(log.WarnLevel)
-				case "ERROR":
-					log.SetLevel(log.ErrorLevel)
-				}
-			}
+	appErr = app.Run(os.Args)
+}
 
-			if c.String("api-url") != "" {
-				config.Config.ApiUrl = c.String("api-url")
-			}
-
-			provider := terraform.Provider()
-			err := provider.ProcessArgs(c)
-			if err != nil {
-				color.HiRed(err.Error())
-				_ = cli.ShowAppHelp(c)
-				os.Exit(1)
-			}
-
-			s := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithWriter(os.Stderr))
-			if !c.Bool("no-color") {
-				_ = s.Color("fgHiGreen", "bold")
-			}
-			s.Suffix = " Calculating costs…"
-			s.Start()
-
-			resources, err := provider.LoadResources()
-			if err != nil {
-				return err
-			}
-			err = prices.PopulatePrices(resources)
-			if err != nil {
-				return err
-			}
-			schema.CalculateCosts(resources)
-			schema.SortResources(resources)
-
-			var out []byte
-			switch c.String("output") {
-			case "table":
-				out, err = output.ToTable(resources)
-			case "json":
-				out, err = output.ToJSON(resources)
-			default:
-				err = cli.ShowAppHelp(c)
-			}
-			if err != nil {
-				return err
-			}
-			s.Stop()
-
-			fmt.Println(string(out))
-
-			return nil
-		},
+func indent(s, indent string) string {
+	lines := make([]string, 0)
+	for _, j := range strings.Split(s, "\n") {
+		lines = append(lines, indent+j)
 	}
 
-	err := app.Run(os.Args)
-	if err != nil {
-		log.Error(err)
-		os.Exit(1)
-	}
+	return strings.Join(lines, "\n")
 }

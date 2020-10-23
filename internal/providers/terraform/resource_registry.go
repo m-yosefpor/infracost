@@ -3,28 +3,32 @@ package terraform
 import (
 	"sync"
 
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/infracost/infracost/internal/providers/terraform/aws"
 )
 
-type resourceRegistrySingleton map[string]schema.ResourceFunc
+type ResourceRegistryMap map[string]*schema.RegistryItem
 
 var (
-	resourceRegistry resourceRegistrySingleton
-	once             sync.Once
+	resourceRegistryMap ResourceRegistryMap
+	once                sync.Once
 )
 
-func getResourceRegistry() *resourceRegistrySingleton {
+func GetResourceRegistryMap() *ResourceRegistryMap {
 	once.Do(func() {
-		resourceRegistry = make(resourceRegistrySingleton)
+		resourceRegistryMap = make(ResourceRegistryMap)
 		// Merge all resource registries
 
 		// AWS
-		for k, v := range aws.ResourceRegistry {
-			resourceRegistry[k] = v
+		for _, registryItem := range aws.ResourceRegistry {
+			resourceRegistryMap[registryItem.Name] = registryItem
+		}
+		for _, registryItem := range aws.GetFreeResources() {
+			resourceRegistryMap[registryItem.Name] = registryItem
 		}
 
 	})
-	return &resourceRegistry
+
+	return &resourceRegistryMap
 }

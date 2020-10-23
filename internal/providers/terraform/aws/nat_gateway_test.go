@@ -3,7 +3,7 @@ package aws_test
 import (
 	"testing"
 
-	"github.com/infracost/infracost/pkg/testutil"
+	"github.com/infracost/infracost/internal/testutil"
 
 	"github.com/infracost/infracost/internal/providers/terraform/tftest"
 
@@ -26,7 +26,7 @@ func TestNATGateway(t *testing.T) {
 			Name: "aws_nat_gateway.nat",
 			CostComponentChecks: []testutil.CostComponentCheck{
 				{
-					Name:            "Per NAT Gateway",
+					Name:            "Per NAT gateway",
 					PriceHash:       "6e137a9da0718f0ec80fb60866730ba9-d2c98780d7b6e36641b521f1f8145c6f",
 					HourlyCostCheck: testutil.HourlyPriceMultiplierCheck(decimal.NewFromInt(1)),
 				},
@@ -52,7 +52,7 @@ func TestNATGateway_usage(t *testing.T) {
 			allocation_id = "eip-12345678"
 			subnet_id     = "subnet-12345678"
 		}
-		
+
 		data "infracost_aws_nat_gateway" "nat" {
 			resources = [aws_nat_gateway.nat.id]
 
@@ -67,7 +67,7 @@ func TestNATGateway_usage(t *testing.T) {
 			Name: "aws_nat_gateway.nat",
 			CostComponentChecks: []testutil.CostComponentCheck{
 				{
-					Name:            "Per NAT Gateway",
+					Name:            "Per NAT gateway",
 					PriceHash:       "6e137a9da0718f0ec80fb60866730ba9-d2c98780d7b6e36641b521f1f8145c6f",
 					HourlyCostCheck: testutil.HourlyPriceMultiplierCheck(decimal.NewFromInt(1)),
 				},

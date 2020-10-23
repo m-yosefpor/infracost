@@ -1,10 +1,17 @@
 package aws
 
 import (
-	"github.com/infracost/infracost/pkg/schema"
+	"github.com/infracost/infracost/internal/schema"
 
 	"github.com/shopspring/decimal"
 )
+
+func GetEBSSnapshotCopyRegistryItem() *schema.RegistryItem {
+	return &schema.RegistryItem{
+		Name:  "aws_ebs_snapshot_copy",
+		RFunc: NewEBSSnapshotCopy,
+	}
+}
 
 func NewEBSSnapshotCopy(d *schema.ResourceData, u *schema.ResourceData) *schema.Resource {
 	region := d.Get("region").String()
