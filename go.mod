@@ -18,6 +18,6 @@ require (
 	github.com/stretchr/testify v1.2.2
 	github.com/tidwall/gjson v1.6.1
 	github.com/urfave/cli/v2 v2.2.0
-	golang.org/x/mod v0.3.0
+	golang.org/x/mod v0.4.1
 	gopkg.in/yaml.v2 v2.2.2
 )
